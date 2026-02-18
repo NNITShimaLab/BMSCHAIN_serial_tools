@@ -5,6 +5,7 @@ description = "Tools to parse BMSCHAIN GUI serial output and export CSV for Exce
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "openpyxl>=3.1.5",
     "pyserial>=3.5",
 ]
 

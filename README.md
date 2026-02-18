@@ -30,9 +30,18 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 ## Project Files
 
 - `bmschain_gui_serial_to_csv.py`: 変換スクリプト
+- `csv_to_excel_voltage_current_template.py`: CSVから電圧・電流グラフ付きExcelを生成
 - `README_bmschain_gui_serial_to_csv_ja.md`: 日本語の詳細手順
 - `docs/serial_output_format_ja.md`: 送信フォーマット解説
 - `docs/faults_order_187_ja.md`: FAULTS項目順
+
+## Excel Plot Template
+
+Generate `.xlsx` with voltage/current charts from CSV:
+
+```bash
+uv run csv_to_excel_voltage_current_template.py --input-csv bms_gui_output_live.csv --output-xlsx bms_plot_template.xlsx
+```
 
 ## Prepare GitHub Repository
 

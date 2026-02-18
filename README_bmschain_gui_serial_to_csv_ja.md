@@ -38,6 +38,7 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 - `--max-frames <int>`: 最大フレーム数で停止
 - `--source-c <path>`: `FAULTS` 名抽出に使う Cファイル
 - `--strict`: 不正フレームで即終了（既定はスキップ）
+- `--no-progress`: シリアル受信中の進捗表示を無効化
 
 ## 6. 出力CSV仕様
 - 文字コード: UTF-8 BOM（Excelで開きやすい）
@@ -61,3 +62,18 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 - フォーマット詳細は `docs/serial_output_format_ja.md` を参照してください。
 - `FAULTS` 187項目の完全順序は `docs/faults_order_187_ja.md` を参照してください。
 - このREADMEのコマンドは `BMSCHAIN_serial_tools` フォルダ内で実行する前提です。
+- `--serial-port` モードでは、受信中に `frames` / `elapsed` などの進捗を表示します。
+
+## 9. 電圧・電流プロット付きExcel生成
+- スクリプト: `csv_to_excel_voltage_current_template.py`
+- 目的: CSVから電圧(各セル)と電流のグラフを含む `.xlsx` を生成
+
+```bash
+uv run csv_to_excel_voltage_current_template.py --input-csv bms_gui_output_live.csv --output-xlsx bms_plot_template.xlsx
+```
+
+特定デバイスのみ対象にする場合:
+
+```bash
+uv run csv_to_excel_voltage_current_template.py --input-csv bms_gui_output_live.csv --output-xlsx bms_plot_template_dev1.xlsx --chain-id 0 --device-id 1
+```

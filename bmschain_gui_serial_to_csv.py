@@ -297,6 +297,7 @@ def collect_frames_from_serial(
     timeout_s: float,
     duration_s: Optional[float],
     max_frames: Optional[int],
+    show_progress: bool,
 ) -> List[str]:
     try:
         import serial  # type: ignore
@@ -309,8 +310,32 @@ def collect_frames_from_serial(
     raw_frames: List[str] = []
     buffer = ""
     start_time = time.monotonic()
+    last_progress_ts = 0.0
+
+    def print_progress(force: bool = False) -> None:
+        nonlocal last_progress_ts
+        if not show_progress:
+            return
+        now = time.monotonic()
+        if not force and (now - last_progress_ts) < 0.5:
+            return
+        last_progress_ts = now
+        elapsed = now - start_time
+        parts = [f"frames={len(raw_frames)}", f"elapsed={elapsed:.1f}s"]
+        if duration_s is not None:
+            remain = max(duration_s - elapsed, 0.0)
+            parts.append(f"remaining={remain:.1f}s")
+        if max_frames is not None:
+            parts.append(f"target={len(raw_frames)}/{max_frames}")
+        print(
+            "\r[INFO] Capturing... " + ", ".join(parts),
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
 
     try:
+        print_progress(force=True)
         try:
             while True:
                 if duration_s is not None and time.monotonic() - start_time >= duration_s:
@@ -330,12 +355,16 @@ def collect_frames_from_serial(
                     frame_raw = frame_raw.strip()
                     if frame_raw:
                         raw_frames.append(frame_raw)
+                        print_progress(force=True)
                     if max_frames is not None and len(raw_frames) >= max_frames:
                         break
+                print_progress()
         except KeyboardInterrupt:
             pass
     finally:
         serial_port.close()
+        if show_progress:
+            print(file=sys.stderr)
 
     return raw_frames
 
@@ -428,6 +457,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail on the first malformed frame instead of skipping it.",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable live progress display during serial capture.",
+    )
     return parser
 
 
@@ -446,6 +480,7 @@ def main() -> int:
                 timeout_s=0.05,
                 duration_s=args.duration_s,
                 max_frames=args.max_frames,
+                show_progress=(not args.no_progress),
             )
         except RuntimeError as exc:
             print(f"[ERROR] {exc}", file=sys.stderr)
