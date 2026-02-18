@@ -26,7 +26,7 @@ uv run bmschain_gui_serial_to_csv.py --input capture.txt --output bms_gui_output
 
 ### 5.2 COMポートからライブ受信してCSVへ保存
 ```bash
-uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --duration-s 20 --output bms_gui_output_live.csv
+uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --duration 20s --output bms_gui_output_live.csv
 ```
 
 ### 5.3 主なオプション
@@ -34,7 +34,7 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 - `--serial-port <COMx>`: COMから直接受信
 - `--output <path>`: 出力CSV
 - `--baudrate <int>`: 既定 `115200`
-- `--duration-s <float>`: ライブ受信時間（省略時は継続）
+- `--duration <value>`: ライブ受信時間（例: `20s`, `5m`, `4h`。省略時は継続）
 - `--max-frames <int>`: 最大フレーム数で停止
 - `--source-c <path>`: `FAULTS` 名抽出に使う Cファイル
 - `--strict`: 不正フレームで即終了（既定はスキップ）
@@ -57,6 +57,7 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 - `ENDData` で復元できるフレームのみ対象
 - 不正フレームは既定で警告表示してスキップ
 - `--strict` 指定時は最初の不正フレームで終了
+- CSVはフレームごとに逐次書き込みされるため、長時間キャプチャでもメモリを圧迫しにくい
 
 ## 8. 補足
 - フォーマット詳細は `docs/serial_output_format_ja.md` を参照してください。
@@ -67,6 +68,7 @@ uv run bmschain_gui_serial_to_csv.py --serial-port COM7 --baudrate 115200 --dura
 ## 9. 電圧・電流プロット付きExcel生成
 - スクリプト: `csv_to_excel_voltage_current_template.py`
 - 目的: CSVから電圧(各セル)と電流のグラフを含む `.xlsx` を生成
+- グラフは補完曲線を使わず、直線 + 小さな点（マーカー）で描画
 
 ```bash
 uv run csv_to_excel_voltage_current_template.py --input-csv bms_gui_output_live.csv --output-xlsx bms_plot_template.xlsx

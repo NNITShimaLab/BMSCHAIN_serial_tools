@@ -92,6 +92,10 @@ def _create_voltage_chart(
         y_values = Reference(ws_data, min_col=col, min_row=1, max_row=row_count)
         chart.add_data(y_values, titles_from_data=True)
     chart.set_categories(x_values)
+    for series in chart.series:
+        series.smooth = False
+        series.marker.symbol = "circle"
+        series.marker.size = 4
 
     ws_charts.add_chart(chart, "A1")
 
@@ -114,6 +118,10 @@ def _create_current_chart(
     y_values = Reference(ws_data, min_col=current_col, min_row=1, max_row=row_count)
     chart.add_data(y_values, titles_from_data=True)
     chart.set_categories(x_values)
+    for series in chart.series:
+        series.smooth = False
+        series.marker.symbol = "circle"
+        series.marker.size = 4
 
     ws_charts.add_chart(chart, "A24")
 

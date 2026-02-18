@@ -9,7 +9,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 
 CELL_COUNT = 14
@@ -18,6 +18,7 @@ SOURCE_RELATIVE_PATH = Path("source") / "AEK_POW_BMS63CHAIN_app_mng.c"
 PROJECT_DIR_NAME = (
     "SPC58EC - AEK_POW_BMS63EN_SOC_Est_SingleAccess_CHAIN_GUI_application for discovery"
 )
+DEFAULT_FAULT_COUNT = 187
 
 
 class FrameParseError(Exception):
@@ -48,6 +49,23 @@ def parse_float_token(token: str, label: str) -> float:
         return float(token)
     except ValueError as exc:
         raise FrameParseError(f"{label} is not a float: {token!r}") from exc
+
+
+def parse_duration_to_seconds(duration_text: str) -> float:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhSMH]?)\s*", duration_text)
+    if not match:
+        raise ValueError(
+            "Invalid --duration format. Use examples like: 20s, 5m, 4h, 30"
+        )
+    value = float(match.group(1))
+    unit = match.group(2).lower() if match.group(2) else "s"
+    if unit == "s":
+        return value
+    if unit == "m":
+        return value * 60.0
+    if unit == "h":
+        return value * 3600.0
+    raise ValueError(f"Unsupported duration unit: {unit}")
 
 
 def tokenize_frame(raw_frame: str) -> List[str]:
@@ -178,10 +196,23 @@ def parse_raw_frame(raw_frame: str) -> Dict[str, object]:
     }
 
 
-def split_frames_from_text(raw_text: str) -> List[str]:
-    normalized = raw_text.replace("\r", "").replace("\n", "")
-    chunks = normalized.split(FRAME_END_MARKER)
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
+def iter_frames_from_text_file(
+    path: Path,
+    encoding: str,
+    chunk_chars: int = 65536,
+) -> Iterator[str]:
+    buffer = ""
+    with path.open("r", encoding=encoding, errors="ignore") as fp:
+        while True:
+            chunk = fp.read(chunk_chars)
+            if not chunk:
+                break
+            buffer += chunk.replace("\r", "").replace("\n", "")
+            while FRAME_END_MARKER in buffer:
+                frame_raw, buffer = buffer.split(FRAME_END_MARKER, 1)
+                frame_raw = frame_raw.strip()
+                if frame_raw:
+                    yield frame_raw
 
 
 def extract_fault_names_from_c(c_source_path: Path) -> List[str]:
@@ -223,82 +254,93 @@ def build_fault_column_names(
     return columns
 
 
-def write_csv(
-    output_path: Path,
-    parsed_frames: List[Dict[str, object]],
-    fault_columns: List[str],
-) -> None:
-    headers = [
-        "frame_index",
-        "total_devices",
-        "chain_id",
-        "device_id",
-    ]
-    headers += [f"soc_cell{cell}" for cell in range(1, CELL_COUNT + 1)]
-    headers += [f"vcell{cell}_v" for cell in range(1, CELL_COUNT + 1)]
-    headers += [f"temp_cell{cell}_raw" for cell in range(1, CELL_COUNT + 1)]
-    headers += [f"bal_cell{cell}" for cell in range(1, CELL_COUNT + 1)]
-    headers += [
-        "current_a",
-        "pack_voltage_v",
-        "vref_v",
-        "vuv_threshold_v",
-        "vov_threshold_v",
-        "gput_threshold_v",
-        "gpot_threshold_v",
-    ]
-    headers += fault_columns
-    headers += ["vtref_v"]
+class CsvStreamWriter:
+    def __init__(self, output_path: Path, fault_columns: List[str]) -> None:
+        self.output_path = output_path
+        self.fault_columns = fault_columns
+        self._fp = None
+        self._writer = None
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(headers)
+    def __enter__(self) -> "CsvStreamWriter":
+        headers = [
+            "frame_index",
+            "total_devices",
+            "chain_id",
+            "device_id",
+        ]
+        headers += [f"soc_cell{cell}" for cell in range(1, CELL_COUNT + 1)]
+        headers += [f"vcell{cell}_v" for cell in range(1, CELL_COUNT + 1)]
+        headers += [f"temp_cell{cell}_raw" for cell in range(1, CELL_COUNT + 1)]
+        headers += [f"bal_cell{cell}" for cell in range(1, CELL_COUNT + 1)]
+        headers += [
+            "current_a",
+            "pack_voltage_v",
+            "vref_v",
+            "vuv_threshold_v",
+            "vov_threshold_v",
+            "gput_threshold_v",
+            "gpot_threshold_v",
+        ]
+        headers += self.fault_columns
+        headers += ["vtref_v"]
 
-        for frame_index, frame in enumerate(parsed_frames, start=1):
-            row: List[object] = [
-                frame_index,
-                frame["total_devices"],
-                frame["chain_id"],
-                frame["device_id"],
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fp = self.output_path.open("w", encoding="utf-8-sig", newline="")
+        self._writer = csv.writer(self._fp)
+        self._writer.writerow(headers)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._fp is not None:
+            self._fp.close()
+            self._fp = None
+            self._writer = None
+
+    def write_frame(self, frame_index: int, frame: Dict[str, object]) -> None:
+        if self._writer is None:
+            raise RuntimeError("CsvStreamWriter is not opened.")
+
+        row: List[object] = [
+            frame_index,
+            frame["total_devices"],
+            frame["chain_id"],
+            frame["device_id"],
+        ]
+        row.extend(frame["soc_values"])  # type: ignore[arg-type]
+        row.extend(frame["vcell_values"])  # type: ignore[arg-type]
+        row.extend(frame["temp_values"])  # type: ignore[arg-type]
+        row.extend(frame["bal_values"])  # type: ignore[arg-type]
+        row.extend(
+            [
+                frame["current_a"],
+                frame["pack_voltage_v"],
+                frame["vref_v"],
+                frame["vuv_threshold_v"],
+                frame["vov_threshold_v"],
+                frame["gput_threshold_v"],
+                frame["gpot_threshold_v"],
             ]
-            row.extend(frame["soc_values"])  # type: ignore[arg-type]
-            row.extend(frame["vcell_values"])  # type: ignore[arg-type]
-            row.extend(frame["temp_values"])  # type: ignore[arg-type]
-            row.extend(frame["bal_values"])  # type: ignore[arg-type]
-            row.extend(
-                [
-                    frame["current_a"],
-                    frame["pack_voltage_v"],
-                    frame["vref_v"],
-                    frame["vuv_threshold_v"],
-                    frame["vov_threshold_v"],
-                    frame["gput_threshold_v"],
-                    frame["gpot_threshold_v"],
-                ]
-            )
+        )
 
-            faults: List[int] = frame["fault_values"]  # type: ignore[assignment]
-            row.extend(faults)
-            if len(faults) < len(fault_columns):
-                row.extend([""] * (len(fault_columns) - len(faults)))
+        faults: List[int] = frame["fault_values"]  # type: ignore[assignment]
+        if len(faults) > len(self.fault_columns):
+            faults = faults[: len(self.fault_columns)]
+        row.extend(faults)
+        if len(faults) < len(self.fault_columns):
+            row.extend([""] * (len(self.fault_columns) - len(faults)))
 
-            row.append(frame["vtref_v"])
-            writer.writerow(row)
+        row.append(frame["vtref_v"])
+        self._writer.writerow(row)
 
 
-def read_text_file(path: Path, encoding: str) -> str:
-    return path.read_text(encoding=encoding, errors="ignore")
-
-
-def collect_frames_from_serial(
+def iter_frames_from_serial(
     port: str,
     baudrate: int,
     timeout_s: float,
-    duration_s: Optional[float],
+    duration_seconds: Optional[float],
     max_frames: Optional[int],
     show_progress: bool,
-) -> List[str]:
+) -> Iterator[str]:
     try:
         import serial  # type: ignore
     except ImportError as exc:
@@ -307,7 +349,7 @@ def collect_frames_from_serial(
         ) from exc
 
     serial_port = serial.Serial(port=port, baudrate=baudrate, timeout=timeout_s)
-    raw_frames: List[str] = []
+    captured_frames = 0
     buffer = ""
     start_time = time.monotonic()
     last_progress_ts = 0.0
@@ -321,12 +363,12 @@ def collect_frames_from_serial(
             return
         last_progress_ts = now
         elapsed = now - start_time
-        parts = [f"frames={len(raw_frames)}", f"elapsed={elapsed:.1f}s"]
-        if duration_s is not None:
-            remain = max(duration_s - elapsed, 0.0)
+        parts = [f"frames={captured_frames}", f"elapsed={elapsed:.1f}s"]
+        if duration_seconds is not None:
+            remain = max(duration_seconds - elapsed, 0.0)
             parts.append(f"remaining={remain:.1f}s")
         if max_frames is not None:
-            parts.append(f"target={len(raw_frames)}/{max_frames}")
+            parts.append(f"target={captured_frames}/{max_frames}")
         print(
             "\r[INFO] Capturing... " + ", ".join(parts),
             end="",
@@ -338,9 +380,12 @@ def collect_frames_from_serial(
         print_progress(force=True)
         try:
             while True:
-                if duration_s is not None and time.monotonic() - start_time >= duration_s:
+                if (
+                    duration_seconds is not None
+                    and time.monotonic() - start_time >= duration_seconds
+                ):
                     break
-                if max_frames is not None and len(raw_frames) >= max_frames:
+                if max_frames is not None and captured_frames >= max_frames:
                     break
 
                 chunk = serial_port.read(serial_port.in_waiting or 1)
@@ -354,9 +399,10 @@ def collect_frames_from_serial(
                     frame_raw, buffer = buffer.split(FRAME_END_MARKER, 1)
                     frame_raw = frame_raw.strip()
                     if frame_raw:
-                        raw_frames.append(frame_raw)
+                        captured_frames += 1
                         print_progress(force=True)
-                    if max_frames is not None and len(raw_frames) >= max_frames:
+                        yield frame_raw
+                    if max_frames is not None and captured_frames >= max_frames:
                         break
                 print_progress()
         except KeyboardInterrupt:
@@ -366,23 +412,33 @@ def collect_frames_from_serial(
         if show_progress:
             print(file=sys.stderr)
 
-    return raw_frames
 
-
-def parse_frames(
-    raw_frames: List[str],
+def stream_frames_to_csv(
+    raw_frames: Iterator[str],
+    writer: CsvStreamWriter,
     strict: bool,
-) -> List[Dict[str, object]]:
-    parsed: List[Dict[str, object]] = []
-    for index, raw_frame in enumerate(raw_frames, start=1):
+) -> tuple[int, int, int]:
+    parsed_count = 0
+    skipped_count = 0
+    max_fault_count = 0
+
+    for source_index, raw_frame in enumerate(raw_frames, start=1):
         try:
-            parsed.append(parse_raw_frame(raw_frame))
+            frame = parse_raw_frame(raw_frame)
         except FrameParseError as exc:
-            message = f"[WARN] Skipped frame #{index}: {exc}"
+            message = f"[WARN] Skipped frame #{source_index}: {exc}"
             if strict:
                 raise RuntimeError(message) from exc
             print(message, file=sys.stderr)
-    return parsed
+            skipped_count += 1
+            continue
+
+        parsed_count += 1
+        fault_count = len(frame["fault_values"])  # type: ignore[arg-type]
+        max_fault_count = max(max_fault_count, fault_count)
+        writer.write_frame(parsed_count, frame)
+
+    return parsed_count, skipped_count, max_fault_count if max_fault_count > 0 else 0
 
 
 def discover_default_source_path(script_path: Path) -> Path:
@@ -427,16 +483,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Baud rate for --serial-port mode. Default: 115200",
     )
     parser.add_argument(
-        "--duration-s",
-        type=float,
+        "--duration",
+        type=str,
         default=None,
-        help="Capture duration in seconds for --serial-port mode. Default: until Ctrl+C",
+        help="Capture duration for --serial-port mode (examples: 20s, 5m, 4h).",
     )
     parser.add_argument(
         "--max-frames",
         type=int,
         default=None,
         help="Maximum number of frames to capture in --serial-port mode.",
+    )
+    parser.add_argument(
+        "--duration-s",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--input-encoding",
@@ -468,17 +530,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
+    source_c_path = args.source_c
+    if source_c_path is None:
+        source_c_path = discover_default_source_path(Path(__file__).resolve())
+    fault_names = extract_fault_names_from_c(source_c_path)
+    expected_fault_count = len(fault_names) if fault_names else DEFAULT_FAULT_COUNT
+    fault_columns = build_fault_column_names(expected_fault_count, fault_names)
+
+    duration_seconds: Optional[float] = None
+    if args.duration is not None:
+        try:
+            duration_seconds = parse_duration_to_seconds(args.duration)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+    elif args.duration_s is not None:
+        duration_seconds = args.duration_s
 
     if args.input is not None:
-        raw_text = read_text_file(args.input, args.input_encoding)
-        raw_frames = split_frames_from_text(raw_text)
+        raw_frames = iter_frames_from_text_file(args.input, args.input_encoding)
     else:
         try:
-            raw_frames = collect_frames_from_serial(
+            raw_frames = iter_frames_from_serial(
                 port=args.serial_port,
                 baudrate=args.baudrate,
                 timeout_s=0.05,
-                duration_s=args.duration_s,
+                duration_seconds=duration_seconds,
                 max_frames=args.max_frames,
                 show_progress=(not args.no_progress),
             )
@@ -486,26 +563,26 @@ def main() -> int:
             print(f"[ERROR] {exc}", file=sys.stderr)
             return 1
 
-    if not raw_frames:
-        print("[ERROR] No raw frames found", file=sys.stderr)
-        return 1
+    with CsvStreamWriter(args.output, fault_columns) as writer:
+        parsed_count, skipped_count, max_fault_count = stream_frames_to_csv(
+            raw_frames=raw_frames,
+            writer=writer,
+            strict=args.strict,
+        )
 
-    parsed_frames = parse_frames(raw_frames, strict=args.strict)
-    if not parsed_frames:
+    if parsed_count == 0:
         print("[ERROR] No valid frames could be parsed", file=sys.stderr)
         return 1
 
-    max_fault_count = max(len(frame["fault_values"]) for frame in parsed_frames)  # type: ignore[arg-type]
-    source_c_path = args.source_c
-    if source_c_path is None:
-        source_c_path = discover_default_source_path(Path(__file__).resolve())
-    fault_names = extract_fault_names_from_c(source_c_path)
-    fault_columns = build_fault_column_names(max_fault_count, fault_names)
+    if max_fault_count > len(fault_columns):
+        print(
+            "[WARN] Some frames contained more FAULTS than configured columns; extra values were truncated.",
+            file=sys.stderr,
+        )
 
-    write_csv(args.output, parsed_frames, fault_columns)
     print(
         "[INFO] Wrote CSV: "
-        f"{args.output} (frames={len(parsed_frames)}, faults_per_frame_max={max_fault_count})"
+        f"{args.output} (frames={parsed_count}, skipped={skipped_count}, faults_per_frame_max={max_fault_count})"
     )
     return 0
 
